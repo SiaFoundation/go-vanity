@@ -28,12 +28,34 @@ var tmpl = template.Must(template.New("main").Parse(`<!DOCTYPE html>
 `))
 
 var (
-	domain   string
-	vcs      string
-	httpAddr string
+	domain    string
+	vcs       string
+	httpAddr  string
+	overrides string
 )
 
-func run(ctx context.Context, domain, vcs, httpAddr string) error {
+// parseOverrides parses a comma-separated list of repo=vanity mappings.
+// e.g. "sia-storage-go=sia-storage,old-name=new-name"
+// The key is the repo name in the VCS, the value is the vanity package name.
+func parseOverrides(s string) (repoToVanity map[string]string, vanityToRepo map[string]string) {
+	repoToVanity = make(map[string]string)
+	vanityToRepo = make(map[string]string)
+	if s == "" {
+		return
+	}
+	for _, entry := range strings.Split(s, ",") {
+		parts := strings.SplitN(strings.TrimSpace(entry), "=", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		repo, vanity := strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1])
+		repoToVanity[repo] = vanity
+		vanityToRepo[vanity] = repo
+	}
+	return
+}
+
+func run(ctx context.Context, domain, vcs, httpAddr string, repoToVanity, vanityToRepo map[string]string) error {
 	l, err := net.Listen("tcp", httpAddr)
 	if err != nil {
 		return fmt.Errorf("failed to listen on %s: %w", httpAddr, err)
@@ -48,6 +70,15 @@ func run(ctx context.Context, domain, vcs, httpAddr string) error {
 				return
 			}
 			root := strings.Split(req.URL.Path, "/")[1]
+			pkgRoot := root
+			repoRoot := root
+			// check if the request path matches a vanity name that maps to a different repo
+			if repo, ok := vanityToRepo[root]; ok {
+				repoRoot = repo
+			} else if vanity, ok := repoToVanity[root]; ok {
+				// request came in with repo name, redirect to vanity name
+				pkgRoot = vanity
+			}
 			w.Header().Set("Cache-Control", "public, max-age=300")
 			tmpl.Execute(w, struct {
 				Domain     string
@@ -58,8 +89,8 @@ func run(ctx context.Context, domain, vcs, httpAddr string) error {
 			}{
 				Domain:     domain,
 				VCS:        vcs,
-				PkgRoot:    root,
-				RepoRoot:   root,
+				PkgRoot:    pkgRoot,
+				RepoRoot:   repoRoot,
 				ImportPath: req.URL.Path,
 			})
 		}),
@@ -83,6 +114,7 @@ func main() {
 	flag.StringVar(&domain, "domain", os.Getenv("VANITY_DOMAIN"), "vanity domain, e.g. foo.com")
 	flag.StringVar(&vcs, "vcs", os.Getenv("VANITY_VCS"), "vcs URL, e.g. github.com/foo")
 	flag.StringVar(&httpAddr, "addr", ":8080", "host:port to listen on")
+	flag.StringVar(&overrides, "overrides", os.Getenv("VANITY_OVERRIDES"), "comma-separated repo=vanity mappings, e.g. sia-storage-go=sia-storage")
 	flag.Parse()
 
 	switch {
@@ -94,10 +126,12 @@ func main() {
 		log.Fatal("Missing required flag: -addr")
 	}
 
+	repoToVanity, vanityToRepo := parseOverrides(overrides)
+
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 
-	if err := run(ctx, domain, vcs, httpAddr); err != nil {
+	if err := run(ctx, domain, vcs, httpAddr, repoToVanity, vanityToRepo); err != nil {
 		log.Fatal(err)
 	}
 }
