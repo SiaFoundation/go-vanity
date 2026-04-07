@@ -69,15 +69,17 @@ func run(ctx context.Context, domain, vcs, httpAddr string, repoToVanity, vanity
 				http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
 				return
 			}
-			root := strings.Split(req.URL.Path, "/")[1]
-			pkgRoot := root
-			repoRoot := root
+			pkgRoot := strings.Split(req.URL.Path, "/")[1]
+			repoRoot := pkgRoot
+			// if the request came in with a repo name that has a vanity override,
+			// reject it — the vanity name is canonical
+			if _, ok := repoToVanity[pkgRoot]; ok {
+				http.NotFound(w, req)
+				return
+			}
 			// check if the request path matches a vanity name that maps to a different repo
-			if repo, ok := vanityToRepo[root]; ok {
+			if repo, ok := vanityToRepo[pkgRoot]; ok {
 				repoRoot = repo
-			} else if vanity, ok := repoToVanity[root]; ok {
-				// request came in with repo name, redirect to vanity name
-				pkgRoot = vanity
 			}
 			w.Header().Set("Cache-Control", "public, max-age=300")
 			tmpl.Execute(w, struct {
